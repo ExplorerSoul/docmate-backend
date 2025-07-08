@@ -64,6 +64,6 @@ router.get('/student', authMiddleware, async (req, res) => {
   }
 });
 
-router.get("/presigned/:key(*)", studentAuthMiddleware, getPresignedFileUrl);
+router.get("/presigned/*", studentAuthMiddleware, getPresignedFileUrl);
 
 module.exports = router;
