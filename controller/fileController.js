@@ -11,8 +11,9 @@ const s3Client = new S3Client({
 
 exports.getPresignedFileUrl = async (req, res) => {
   try {
-    const rawKey = req.params[0];
-    const key = decodeURIComponent(rawKey); // Handles %20, etc.
+    // this line is changed
+    const rawKey = req.params.key;
+    const key = decodeURIComponent(rawKey);
 
     if (!key) {
       return res.status(400).json({ error: "Missing file key" });
