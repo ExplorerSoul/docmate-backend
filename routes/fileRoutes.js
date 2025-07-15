@@ -2,9 +2,6 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { getFileModel } = require('../database/models/FileSchema');
-const { getPresignedFileUrl } = require("../controller/fileController");
-const studentAuthMiddleware = require("../middleware/studentAuthMiddleware");
-
 
 // 🔐 Admin-only: GET /api/files => get all files for institute
 router.get('/', authMiddleware, async (req, res) => {
@@ -64,7 +61,7 @@ router.get('/student', authMiddleware, async (req, res) => {
   }
 });
 
-// router.get("/presigned/*", studentAuthMiddleware, getPresignedFileUrl);
-router.get("/presigned/:key", studentAuthMiddleware, getPresignedFileUrl);
+// ❌ Remove this route if using public S3 links
+// router.get("/presigned/:key", studentAuthMiddleware, getPresignedFileUrl);
 
 module.exports = router;

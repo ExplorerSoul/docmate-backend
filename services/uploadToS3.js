@@ -1,8 +1,5 @@
 // services/uploadToS3.js
-const {
-  S3Client,
-  PutObjectCommand,
-} = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { v4: uuidv4 } = require("uuid");
 
 const s3Client = new S3Client({
@@ -24,7 +21,7 @@ async function uploadToS3(buffer, originalFilename) {
     Key: key,
     Body: buffer,
     ContentType: contentType,
-    ACL: "private", // Optional: make public or remove if private
+    ACL: "public-read", // ✅ Now the file will be publicly accessible
   });
 
   try {
