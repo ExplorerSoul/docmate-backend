@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { getFileModel } = require('../database/models/FileSchema');
-const { getPresignedFileUrl } = require('../controllers/presignedController'); // ✅ Import
+const { getPresignedFileUrl } = require('../controller/fileController'); // ✅ Import
 
 // 🔐 Admin-only: GET /api/files => get all files for institute
 router.get('/', authMiddleware, async (req, res) => {
