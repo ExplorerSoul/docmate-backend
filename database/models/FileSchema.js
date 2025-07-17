@@ -32,6 +32,13 @@ const fileSchema = new mongoose.Schema({
     trim: true
   },
 
+  // ✅ Add s3Key for presigned URL retrieval
+  s3Key: {
+    type: String,
+    required: true, // Internal S3 object key (uploads/...uuid.pdf)
+    trim: true
+  },
+
   studentName: {
     type: String,
     required: true,

@@ -40,33 +40,33 @@ exports.uploadDocument = async (req, res) => {
       return res.status(409).json({ error: "Document already exists." });
     }
 
-    // Blockchain first
-const signer = new ethers.Wallet(config.ethereum.privateKey, provider);
-const contractWithSigner = contract.connect(signer);
+    // Blockchain
+    const signer = new ethers.Wallet(config.ethereum.privateKey, provider);
+    const contractWithSigner = contract.connect(signer);
 
-const tx = await contractWithSigner.issueCertificate(
-  `${regdNo}@${institute}`,  // studentId
-  hash,                      // fileHash
-  { gasLimit: 300000n }
-);
-await tx.wait();
-
+    const tx = await contractWithSigner.issueCertificate(
+      `${regdNo}@${institute}`, // studentId
+      hash,                     // fileHash
+      { gasLimit: 300000n }
+    );
+    await tx.wait();
 
     const certCount = await contract.certificateCount();
     const certId = (certCount - 1n).toString();
 
-    // Upload to S3
-    const s3Url = await uploadToS3(fileBuffer, file.originalname);
-    if (!s3Url) {
+    // ✅ Upload to S3 and get both key + URL
+    const { s3Key, publicUrl } = await uploadToS3(fileBuffer, file.originalname);
+    if (!s3Key || !publicUrl) {
       return res.status(500).json({ error: "S3 upload failed." });
     }
 
-    // Save to DB
+    // ✅ Save to DB
     newDoc = await FileModel.create({
       title: `${docType}_${regdNo}`,
       category,
       hash,
-      url: s3Url,
+      url: publicUrl,
+      s3Key, // ✅ NEW
       studentName: student.name,
       studentEmail: student.email,
       issuer: institute,
@@ -78,13 +78,12 @@ await tx.wait();
 
     await BlockchainCertificate.create({
       certId,
-      studentId: `${regdNo}@${institute}`, // ✅ Add this
+      studentId: `${regdNo}@${institute}`,
       docHash: hash,
       issuer: institute,
       txHash: tx.hash,
       issuedAt: new Date(),
     });
-
 
     return res.status(201).json({
       message: "Uploaded and registered on blockchain.",
@@ -92,12 +91,12 @@ await tx.wait();
       certId,
       document: newDoc,
     });
-
   } catch (err) {
     logger.error("❌ Upload failed:", err);
     return res.status(500).json({ error: "Upload failed.", details: err.message });
   }
 };
+
 
 
 
@@ -125,7 +124,6 @@ exports.bulkUploadFromZip = async (req, res) => {
 
     for (const entry of zipEntries) {
       let newDoc = null;
-      let s3Url = null;
 
       try {
         if (entry.isDirectory) continue;
@@ -158,7 +156,7 @@ exports.bulkUploadFromZip = async (req, res) => {
           continue;
         }
 
-        // Blockchain write
+        // ✅ Blockchain write
         const tx = await contractWithSigner.issueCertificate(
           `${regdNo}@${institute}`,
           hash,
@@ -169,19 +167,20 @@ exports.bulkUploadFromZip = async (req, res) => {
         const certCount = await contract.certificateCount();
         const certId = (certCount - 1n).toString();
 
-        // Upload to S3
-        s3Url = await uploadToS3(fileBuffer, `${regdNo}.pdf`);
-        if (!s3Url) {
+        // ✅ Upload to S3 (Get key + URL)
+        const { s3Key, publicUrl } = await uploadToS3(fileBuffer, `${regdNo}.pdf`);
+        if (!s3Key || !publicUrl) {
           resultSummary.push({ regdNo, status: "S3 upload failed" });
           continue;
         }
 
-        // Create file record in DB
+        // ✅ Save to DB
         newDoc = await FileModel.create({
           title: `${docType}_${regdNo}`,
           category,
           hash,
-          url: s3Url,
+          url: publicUrl,
+          s3Key, // ✅ Add s3Key for presigned URL feature
           studentName: student.name,
           studentEmail: student.email,
           issuer: institute,
@@ -191,7 +190,7 @@ exports.bulkUploadFromZip = async (req, res) => {
           uploadedBy: req.user.role,
         });
 
-        // Blockchain cert metadata in DB
+        // ✅ Blockchain cert metadata
         await BlockchainCertificate.create({
           certId,
           docHash: hash,
@@ -204,7 +203,7 @@ exports.bulkUploadFromZip = async (req, res) => {
           regdNo,
           status: "success",
           txHash: tx.hash,
-          certId
+          certId,
         });
 
       } catch (innerErr) {
@@ -214,7 +213,7 @@ exports.bulkUploadFromZip = async (req, res) => {
           regdNo: entry.entryName.split(".")[0],
           status: "error",
           error: innerErr.message,
-          partialSuccess: newDoc ? "document created but blockchain failed" : null
+          partialSuccess: newDoc ? "document created but blockchain failed" : null,
         });
       }
     }

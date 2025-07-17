@@ -1,4 +1,3 @@
-// services/uploadToS3.js
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { v4: uuidv4 } = require("uuid");
 
@@ -10,36 +9,39 @@ const s3Client = new S3Client({
   },
 });
 
+/**
+ * Uploads a file buffer to S3 and returns key + public URL
+ * @param {Buffer} buffer - File buffer
+ * @param {string} originalFilename - Original filename
+ * @returns {Promise<{ s3Key: string, publicUrl: string }>}
+ */
 async function uploadToS3(buffer, originalFilename) {
   const uniqueFilename = `${Date.now()}-${uuidv4()}-${originalFilename}`;
-  const key = `uploads/${uniqueFilename}`;
+  const s3Key = `uploads/${uniqueFilename}`;
 
   const contentType = getMimeType(originalFilename);
 
   const command = new PutObjectCommand({
     Bucket: process.env.AWS_BUCKET_NAME,
-    Key: key,
+    Key: s3Key,
     Body: buffer,
     ContentType: contentType,
-    ACL: "public-read", // ✅ Now the file will be publicly accessible
   });
 
   try {
     await s3Client.send(command);
-    const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
-    return publicUrl;
+
+    const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
+    return { s3Key, publicUrl };
   } catch (err) {
-    console.error("S3 Upload Failed:", err);
+    console.error("❌ S3 Upload Failed:", err);
     throw err;
   }
 }
 
 function getMimeType(filename) {
   const ext = filename.split(".").pop().toLowerCase();
-  const map = {
-    pdf: "application/pdf",
-    zip: "application/zip",
-  };
+  const map = { pdf: "application/pdf", zip: "application/zip" };
   return map[ext] || "application/octet-stream";
 }
 

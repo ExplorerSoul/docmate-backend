@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const { getFileModel } = require('../database/models/FileSchema');
+const { getPresignedFileUrl } = require('../controllers/presignedController'); // ✅ Import
 
 // 🔐 Admin-only: GET /api/files => get all files for institute
 router.get('/', authMiddleware, async (req, res) => {
@@ -17,7 +18,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
   try {
     const File = getFileModel(institute);
-    const files = await File.find().sort({ createdAt: -1 }).lean();
+    const files = await File.find().sort({ createdAt: -1 }).select('-__v').lean();
 
     console.log(`📄 Admin fetched ${files.length} files for institute: ${institute}`);
     res.status(200).json({
@@ -48,7 +49,7 @@ router.get('/student', authMiddleware, async (req, res) => {
 
   try {
     const File = getFileModel(institute);
-    const files = await File.find({ regdNo }).sort({ createdAt: -1 }).lean();
+    const files = await File.find({ regdNo }).sort({ createdAt: -1 }).select('-__v').lean();
 
     console.log(`📄 Student ${regdNo} fetched ${files.length} files`);
     res.status(200).json({
@@ -61,7 +62,7 @@ router.get('/student', authMiddleware, async (req, res) => {
   }
 });
 
-// ❌ Remove this route if using public S3 links
-// router.get("/presigned/:key", studentAuthMiddleware, getPresignedFileUrl);
+// ✅ Add this route back for secure download
+// router.get("/presigned/:key", authMiddleware, getPresignedFileUrl);
 
 module.exports = router;

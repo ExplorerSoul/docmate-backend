@@ -55,23 +55,21 @@ exports.getPresignedFileUrl = async (req, res) => {
       return res.status(400).json({ error: "Missing file key in request." });
     }
 
-    const user = req.user;
-    if (!user || !user.institute || !user.regdNo) {
-      return res.status(401).json({ error: "Unauthorized access. User info missing." });
+    const { institute, regdNo, role } = req.user;
+    if (!institute) {
+      return res.status(401).json({ error: "Unauthorized access." });
     }
 
-    const { institute, regdNo } = user;
     const File = getFileModel(institute);
-
     const file = await File.findOne({ s3Key: key });
 
     if (!file) {
-      console.warn(`⚠️ File not found: ${key}`);
-      return res.status(404).json({ error: "File not found in database." });
+      return res.status(404).json({ error: "File not found." });
     }
 
-    if (file.regdNo !== regdNo) {
-      return res.status(403).json({ error: "Access denied. This is not your document." });
+    // ✅ Student can only access their own docs; Admin can access all
+    if (role === "student" && file.regdNo !== regdNo) {
+      return res.status(403).json({ error: "Access denied." });
     }
 
     const command = new GetObjectCommand({
@@ -79,9 +77,7 @@ exports.getPresignedFileUrl = async (req, res) => {
       Key: key,
     });
 
-    const signedUrl = await getSignedUrl(s3Client, command, {
-      expiresIn: 60, // 1 minute
-    });
+    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
 
     return res.status(200).json({ url: signedUrl });
   } catch (err) {
