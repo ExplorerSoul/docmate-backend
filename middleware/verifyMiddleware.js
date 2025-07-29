@@ -1,24 +1,41 @@
-// middlewares/verifyMiddleware.js
 const multer = require("multer");
+const path = require("path");
 
-// ✅ Store uploaded files in memory for hashing
+// ✅ In-memory storage
 const storage = multer.memoryStorage();
 
-// ✅ Allow only PDF files
+// ✅ Only allow PDF files
 const fileFilter = (req, file, cb) => {
-  if (file.mimetype !== "application/pdf") {
-    return cb(new Error("Only PDF files are allowed for verification."), false);
+  const ext = path.extname(file.originalname).toLowerCase();
+  const isPDF = file.mimetype === "application/pdf" && ext === ".pdf";
+
+  if (isPDF) {
+    cb(null, true);
+  } else {
+    cb(new Error("Invalid file type. Only PDF files are allowed."), false);
   }
-  cb(null, true);
 };
 
-// ✅ Configure multer for file size & file type limits
+// ✅ Max file size from env or default 10MB
+const maxFileSize = parseInt(process.env.VERIFY_MAX_SIZE_MB || "10") * 1024 * 1024;
+
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // Max 10 MB
-  },
+  limits: { fileSize: maxFileSize },
   fileFilter,
 });
 
-module.exports = upload;
+// ✅ Multer error handler
+const multerErrorHandler = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: `File too large. Max size is ${process.env.VERIFY_MAX_SIZE_MB || 10} MB.` });
+    }
+    return res.status(400).json({ error: `Multer error: ${err.message}` });
+  } else if (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  next();
+};
+
+module.exports = { upload, multerErrorHandler };

@@ -7,53 +7,48 @@ const contract = new ethers.Contract(config.ethereum.contractAddress, contractAB
 
 /**
  * ✅ Issues a certificate and returns { success, txHash, certId }
- * @param {Object} certData - { studentId, fileHash }
- * @param {ethers.Signer} signer - signer connected to provider
  */
 async function issueCertificate(certData, signer) {
   try {
     const { studentId, fileHash } = certData;
-
-    if (!studentId || !fileHash) {
-      throw new Error("Missing studentId or fileHash");
-    }
-
-    if (!signer || typeof signer.sendTransaction !== "function") {
-      throw new Error("Invalid signer. Must be a connected wallet instance.");
-    }
+    if (!studentId || !fileHash) throw new Error("Missing studentId or fileHash");
+    if (!signer || typeof signer.sendTransaction !== "function") throw new Error("Invalid signer");
 
     const contractWithSigner = contract.connect(signer);
 
     // Send transaction
     const tx = await contractWithSigner.issueCertificate(studentId, fileHash, {
-      gasLimit: 300_000n, // BigInt for ethers v6
+      gasLimit: config.ethereum.gasLimit ? BigInt(config.ethereum.gasLimit) : 300_000n,
     });
 
     console.log(`📤 Blockchain Tx Sent: ${tx.hash}`);
 
     // Wait for confirmation
-    const receipt = await provider.waitForTransaction(tx.hash);
-    if (!receipt || receipt.status !== 1) {
-      throw new Error("❌ Transaction failed on-chain");
+    const receipt = await tx.wait();
+    if (!receipt || receipt.status !== 1) throw new Error("❌ Transaction failed on-chain");
+
+    // Extract certId from event logs
+    let certId = null;
+    try {
+      const parsedLog = receipt.logs
+        .map(log => {
+          try { return contract.interface.parseLog(log); } catch { return null; }
+        })
+        .find(log => log && log.name === "CertificateIssued");
+      certId = parsedLog ? parsedLog.args[0].toString() : null;
+    } catch {
+      console.warn("⚠ Could not parse CertificateIssued event, falling back to certificateCount");
+      const count = await contract.certificateCount();
+      certId = (count - 1n).toString();
     }
 
-    console.log("✅ Certificate successfully issued on-chain");
+    console.log("✅ Certificate successfully issued on-chain, CertID:", certId);
 
-    // Get certId = certificateCount - 1
-    const count = await contract.certificateCount();
-    const certId = (count - 1n).toString();
-
-    return {
-      success: true,
-      txHash: tx.hash,
-      certId,
-    };
+    return { success: true, txHash: tx.hash, certId };
   } catch (error) {
-    console.error("❌ Error issuing certificate:", error);
+    console.error("❌ Error issuing certificate:", error.message);
     throw new Error("Blockchain certificate issuance failed.");
   }
 }
 
-module.exports = {
-  issueCertificate,
-};
+module.exports = { issueCertificate };

@@ -1,74 +1,69 @@
 const express = require("express");
 const router = express.Router();
 
-const upload = require("../middleware/uploadMiddleware"); // Multer config
+const { upload, multerErrorHandler } = require("../middleware/uploadMiddleware"); // Multer + error handler
 const documentController = require("../controller/documentController");
 const authMiddleware = require("../middleware/authMiddleware"); // JWT auth middleware
 
-// Helper middleware to check if user is admin
-const adminOnly = (req, res, next) => {
-  if (req.user?.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
+// ✅ Role-based middleware
+const requireRole = (role) => (req, res, next) => {
+  if (req.user?.role !== role) {
+    return res.status(403).json({ error: `Access denied. ${role} role required.` });
   }
   next();
 };
 
-// Helper middleware to check if user is student
-const studentOnly = (req, res, next) => {
-  if (req.user?.role !== 'student') {
-    return res.status(403).json({ error: 'Student access required' });
+// ✅ File type validators
+const validatePDF = (req, res, next) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded." });
+  if (!req.file.originalname.toLowerCase().endsWith(".pdf")) {
+    return res.status(400).json({ error: "Only PDF files are allowed for this route." });
   }
   next();
 };
 
-// ✅ Upload single document (PDF) - Admin only
+const validateZIP = (req, res, next) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded." });
+  if (!req.file.originalname.toLowerCase().endsWith(".zip")) {
+    return res.status(400).json({ error: "Only ZIP files are allowed for bulk upload." });
+  }
+  next();
+};
+
+// ✅ Single PDF upload (Admin only)
 router.post(
   "/document",
   authMiddleware,
-  adminOnly,
-  upload.single("file"), // field name should match frontend
+  requireRole("admin"),
+  upload.single("file"),
+  validatePDF,
   documentController.uploadDocument
 );
 
-// ✅ Bulk upload from ZIP file - Admin only
+// ✅ Bulk ZIP upload (Admin only)
 router.post(
   "/bulk-zip",
   authMiddleware,
-  adminOnly,
-  upload.single("file"), // frontend also sends "file" (not "zipFile")
+  requireRole("admin"),
+  upload.single("file"),
+  validateZIP,
   documentController.bulkUploadFromZip
 );
 
-// ✅ Fetch all uploaded documents - Admin only
-router.get(
-  "/",
-  authMiddleware,
-  adminOnly,
-  documentController.getAllDocuments
-);
+// ✅ Fetch all uploaded documents (Admin only)
+router.get("/", authMiddleware, requireRole("admin"), documentController.getAllDocuments);
 
-// ✅ Students docs route - Student only (matches frontend call)
-router.get(
-  "/student", 
-  authMiddleware, 
-  studentOnly,
-  documentController.getMyDocuments
-);
+// ✅ Fetch student's own documents
+router.get("/student", authMiddleware, requireRole("student"), documentController.getMyDocuments);
 
-// // ✅ Optional: Combined route that works for both admin and student
-router.get(
-  "/documents",
-  authMiddleware,
-  (req, res, next) => {
-    // Route to appropriate controller based on role
-    if (req.user?.role === 'admin') {
-      return documentController.getAllDocuments(req, res, next);
-    } else if (req.user?.role === 'student') {
-      return documentController.getMyDocuments(req, res, next);
-    } else {
-      return res.status(403).json({ error: 'Unauthorized role' });
-    }
-  }
-);
+// ✅ Combined route for both roles
+router.get("/documents", authMiddleware, (req, res) => {
+  if (req.user?.role === "admin") return documentController.getAllDocuments(req, res);
+  if (req.user?.role === "student") return documentController.getMyDocuments(req, res);
+  return res.status(403).json({ error: "Access denied. Invalid role." });
+});
+
+// ✅ Global Multer error handler
+router.use(multerErrorHandler);
 
 module.exports = router;

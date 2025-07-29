@@ -1,6 +1,6 @@
-// controller/documentController.js
 const AdmZip = require("adm-zip");
-const crypto = require("crypto");
+const keccak256 = require("keccak256");
+const { MerkleTree } = require("merkletreejs");
 const { ethers } = require("ethers");
 const logger = require("../services/logger");
 const config = require("../loaders/config");
@@ -13,9 +13,10 @@ const abi = require("../contracts/AcademicCertificateABI.json");
 const provider = new ethers.JsonRpcProvider(config.ethereum.rpcUrl);
 const contract = new ethers.Contract(config.ethereum.contractAddress, abi, provider);
 
+// ==========================
+// Single Document Upload
+// ==========================
 exports.uploadDocument = async (req, res) => {
-  let newDoc = null;
-
   try {
     const file = req.file;
     const { docType, category, regdNo } = req.body;
@@ -27,46 +28,36 @@ exports.uploadDocument = async (req, res) => {
 
     const Student = getStudentModel(institute);
     const student = await Student.findOne({ regdNo });
-    if (!student) {
-      return res.status(404).json({ error: "Student not found." });
-    }
+    if (!student) return res.status(404).json({ error: "Student not found." });
 
     const fileBuffer = file.buffer;
-    const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const hash = keccak256(fileBuffer).toString("hex");
 
     const FileModel = getFileModel(institute);
     const existing = await FileModel.findOne({ hash });
-    if (existing) {
-      return res.status(409).json({ error: "Document already exists." });
-    }
+    if (existing) return res.status(409).json({ error: "Document already exists." });
 
-    // Blockchain
     const signer = new ethers.Wallet(config.ethereum.privateKey, provider);
     const contractWithSigner = contract.connect(signer);
 
-    const tx = await contractWithSigner.issueCertificate(
-      `${regdNo}@${institute}`, // studentId
-      hash,                     // fileHash
-      { gasLimit: 300000n }
-    );
-    await tx.wait();
+    const tx = await contractWithSigner.issueCertificate(`${regdNo}@${institute}`, hash, {
+      gasLimit: BigInt(config.ethereum.gasLimit || 300000),
+    });
+    const receipt = await tx.wait();
 
-    const certCount = await contract.certificateCount();
-    const certId = (certCount - 1n).toString();
+    const event = receipt.logs.find(log => log.fragment?.name === "CertificateIssued");
+    const certId = event ? event.args[0].toString() : null;
 
-    // ✅ Upload to S3 and get both key + URL
     const { s3Key, publicUrl } = await uploadToS3(fileBuffer, file.originalname);
-    if (!s3Key || !publicUrl) {
-      return res.status(500).json({ error: "S3 upload failed." });
-    }
+    if (!s3Key || !publicUrl) return res.status(500).json({ error: "S3 upload failed." });
 
-    // ✅ Save to DB
-    newDoc = await FileModel.create({
+    const newDoc = await FileModel.create({
       title: `${docType}_${regdNo}`,
+      docType,
       category,
       hash,
       url: publicUrl,
-      s3Key, // ✅ NEW
+      s3Key,
       studentName: student.name,
       studentEmail: student.email,
       issuer: institute,
@@ -85,24 +76,17 @@ exports.uploadDocument = async (req, res) => {
       issuedAt: new Date(),
     });
 
-    return res.status(201).json({
-      message: "Uploaded and registered on blockchain.",
-      txHash: tx.hash,
-      certId,
-      document: newDoc,
-    });
+    return res.status(201).json({ message: "Uploaded and registered on blockchain.", txHash: tx.hash, certId, document: newDoc });
   } catch (err) {
-    logger.error("❌ Upload failed:", err);
+    logger.error("❌ Upload failed:", err.stack || err.message);
     return res.status(500).json({ error: "Upload failed.", details: err.message });
   }
 };
 
-
-
-
 // ==========================
 // Bulk Upload from ZIP
 // ==========================
+
 exports.bulkUploadFromZip = async (req, res) => {
   try {
     const { category, docType, issuedAt } = req.body;
@@ -119,119 +103,137 @@ exports.bulkUploadFromZip = async (req, res) => {
     const Student = getStudentModel(institute);
     const resultSummary = [];
 
-    const signer = new ethers.Wallet(config.ethereum.privateKey, provider);
-    const contractWithSigner = contract.connect(signer);
+    // Store metadata for proof mapping
+    const docsMeta = [];
 
     for (const entry of zipEntries) {
-      let newDoc = null;
-
       try {
         if (entry.isDirectory) continue;
 
-        const fileName = entry.entryName;
-        const ext = fileName.split(".").pop().toLowerCase();
-        if (ext !== "pdf") {
-          resultSummary.push({ file: fileName, status: "skipped (not PDF)" });
+        const baseName = entry.entryName.split('/').pop().trim();
+        if (!baseName.toLowerCase().endsWith(".pdf")) {
+          resultSummary.push({ file: baseName, status: "skipped (not PDF)" });
           continue;
         }
 
-        const regdNo = fileName.split(".")[0].trim();
+        const regdNo = baseName.replace(/\.[^/.]+$/, '');
         if (!/^\d{7}$/.test(regdNo)) {
-          resultSummary.push({ file: fileName, status: "invalid regdNo" });
+          resultSummary.push({ file: baseName, status: "invalid regdNo" });
           continue;
         }
 
         const student = await Student.findOne({ regdNo });
         if (!student) {
-          resultSummary.push({ regdNo, status: "student not found" });
+          resultSummary.push({ file: baseName, regdNo, status: "student not found" });
           continue;
         }
 
         const fileBuffer = entry.getData();
-        const hash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+        const hash = keccak256(fileBuffer).toString("hex");
 
-        const existing = await FileModel.findOne({ hash });
-        if (existing) {
-          resultSummary.push({ regdNo, status: "duplicate document" });
-          continue;
-        }
-
-        // ✅ Blockchain write
-        const tx = await contractWithSigner.issueCertificate(
-          `${regdNo}@${institute}`,
-          hash,
-          { gasLimit: 300_000n }
-        );
-        await tx.wait();
-
-        const certCount = await contract.certificateCount();
-        const certId = (certCount - 1n).toString();
-
-        // ✅ Upload to S3 (Get key + URL)
-        const { s3Key, publicUrl } = await uploadToS3(fileBuffer, `${regdNo}.pdf`);
+        const { s3Key, publicUrl } = await uploadToS3(fileBuffer, baseName);
         if (!s3Key || !publicUrl) {
-          resultSummary.push({ regdNo, status: "S3 upload failed" });
+          resultSummary.push({ file: baseName, regdNo, status: "S3 upload failed" });
           continue;
         }
 
-        // ✅ Save to DB
-        newDoc = await FileModel.create({
-          title: `${docType}_${regdNo}`,
-          category,
-          hash,
-          url: publicUrl,
-          s3Key, // ✅ Add s3Key for presigned URL feature
-          studentName: student.name,
-          studentEmail: student.email,
-          issuer: institute,
-          issuedAt: issuedAt || new Date(),
-          regdNo,
-          institute,
-          uploadedBy: req.user.role,
-        });
+        docsMeta.push({ regdNo, student, hash, s3Key, publicUrl, fileBuffer, fileName: baseName });
+        resultSummary.push({ regdNo, file: baseName, status: "ready" });
 
-        // ✅ Blockchain cert metadata
-        await BlockchainCertificate.create({
-          certId,
-          docHash: hash,
-          issuer: institute,
-          txHash: tx.hash,
-          issuedAt: issuedAt || new Date(),
-        });
-
-        resultSummary.push({
-          regdNo,
-          status: "success",
-          txHash: tx.hash,
-          certId,
-        });
-
-      } catch (innerErr) {
-        logger.error(`❌ Error processing file: ${entry.entryName}`, innerErr);
-        resultSummary.push({
-          file: entry.entryName,
-          regdNo: entry.entryName.split(".")[0],
-          status: "error",
-          error: innerErr.message,
-          partialSuccess: newDoc ? "document created but blockchain failed" : null,
-        });
+      } catch (err) {
+        resultSummary.push({ file: entry.entryName, status: "error", error: err.message });
       }
     }
 
+    if (docsMeta.length === 0) {
+      return res.status(400).json({ error: "No valid PDFs in ZIP." });
+    }
+
+    // ✅ Sort documents by regdNo for consistent ordering
+    docsMeta.sort((a, b) => a.regdNo.localeCompare(b.regdNo));
+
+    // ✅ Build Merkle Tree with correct order
+    const leaves = docsMeta.map(doc => Buffer.from(doc.hash, "hex"));
+    const tree = new MerkleTree(leaves, keccak256, { sortPairs: true });
+    const merkleRoot = "0x" + tree.getRoot().toString("hex");
+
+    console.log(`🌳 Built Merkle tree with ${leaves.length} leaves`);
+    console.log(`🌳 Merkle root: ${merkleRoot}`);
+
+    // ✅ Upload to blockchain
+    const signer = new ethers.Wallet(config.ethereum.privateKey, provider);
+    const contractWithSigner = contract.connect(signer);
+    const tx = await contractWithSigner.issueBatchMerkle(merkleRoot, {
+      gasLimit: BigInt(config.ethereum.gasLimit || 800000),
+    });
+    const receipt = await tx.wait();
+    const batchId = receipt?.logs[0]?.args?.[0]?.toString();
+
+    console.log(`🔗 Blockchain transaction: ${tx.hash}`);
+    console.log(`🔗 Batch ID: ${batchId}`);
+
+    // ✅ Save files and certs with CORRECT Merkle proof
+    for (let i = 0; i < docsMeta.length; i++) {
+      const { regdNo, hash, publicUrl, s3Key, student, fileName } = docsMeta[i];
+      const leaf = Buffer.from(hash, "hex");
+      
+      // ✅ FIXED: Generate correct proof
+      const proof = tree.getProof(leaf);
+      const proofHex = proof.map(p => "0x" + p.data.toString("hex"));
+      
+      // ✅ Verify proof locally before saving
+      const verifies = tree.verify(proof, leaf, tree.getRoot());
+      console.log(`🔍 Proof for ${regdNo} (${hash}): ${verifies ? '✅' : '❌'}`);
+      console.log(`   Proof: [${proofHex.join(', ')}]`);
+
+      // Save to file collection
+      await FileModel.create({
+        title: `${docType}_${regdNo}`,
+        docType,
+        category,
+        hash,
+        url: publicUrl,
+        s3Key,
+        studentName: student.name,
+        studentEmail: student.email,
+        issuer: institute,
+        issuedAt: issuedAt || new Date(),
+        regdNo,
+        institute,
+        uploadedBy: req.user.role,
+        isBatch: true,
+        batchMerkleRoot: merkleRoot,
+        batchId,
+      });
+
+      // Save to BlockchainCertificate collection with CORRECT proof
+      await BlockchainCertificate.create({
+        certId: `${merkleRoot}-${regdNo}`,
+        studentId: `${regdNo}@${institute}`,
+        docHash: hash,
+        issuer: institute,
+        txHash: tx.hash,
+        issuedAt: issuedAt || new Date(),
+        isBatch: true,
+        batchMerkleRoot: merkleRoot,
+        batchId,
+        merkleProof: proofHex, // ✅ CORRECT proof
+      });
+    }
+
     return res.status(200).json({
-      message: "Bulk upload completed.",
+      message: "✅ Bulk upload successful.",
+      txHash: tx.hash,
+      merkleRoot,
+      batchId,
       summary: resultSummary,
-      total: resultSummary.length,
-      successful: resultSummary.filter(r => r.status === "success").length,
-      failed: resultSummary.filter(r => r.status === "error").length,
     });
 
   } catch (err) {
-    logger.error("❌ Bulk upload failed", err);
-    return res.status(500).json({ error: "Server error during bulk upload." });
+    logger.error("❌ Bulk upload failed:", err.stack || err.message);
+    return res.status(500).json({ error: "Server error during bulk upload.", details: err.message });
   }
 };
-
 
 // ==========================
 // Fetch All Documents (Admin)
@@ -239,16 +241,13 @@ exports.bulkUploadFromZip = async (req, res) => {
 exports.getAllDocuments = async (req, res) => {
   try {
     const institute = req.user?.institute;
-    if (!institute) {
-      return res.status(400).json({ error: "Unauthorized access. Admin login required." });
-    }
+    if (!institute) return res.status(400).json({ error: "Unauthorized access. Admin login required." });
 
     const FileModel = getFileModel(institute);
     const docs = await FileModel.find().sort({ createdAt: -1 });
-
     return res.status(200).json(docs);
   } catch (err) {
-    logger.error("❌ Failed to fetch documents:", err);
+    logger.error("❌ Failed to fetch documents:", err.stack);
     return res.status(500).json({ error: "Server error while fetching documents." });
   }
 };
@@ -259,21 +258,15 @@ exports.getAllDocuments = async (req, res) => {
 exports.getMyDocuments = async (req, res) => {
   try {
     const { institute, regdNo, role } = req.user;
-
-    if (!institute) {
-      return res.status(403).json({ error: "Unauthorized access. Missing institute." });
-    }
+    if (!institute) return res.status(403).json({ error: "Unauthorized access. Missing institute." });
 
     const FileModel = getFileModel(institute);
     const query = role === "student" ? { regdNo, institute } : {};
     const docs = await FileModel.find(query).sort({ createdAt: -1 });
 
-    return res.status(200).json({
-      documents: docs,
-      count: docs.length,
-    });
+    return res.status(200).json({ documents: docs, count: docs.length });
   } catch (err) {
-    logger.error("❌ Failed to fetch documents:", err);
+    logger.error("❌ Failed to fetch documents:", err.stack);
     return res.status(500).json({ error: "Server error while fetching documents." });
   }
 };

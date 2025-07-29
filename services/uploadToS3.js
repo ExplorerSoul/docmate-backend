@@ -16,32 +16,49 @@ const s3Client = new S3Client({
  * @returns {Promise<{ s3Key: string, publicUrl: string }>}
  */
 async function uploadToS3(buffer, originalFilename) {
-  const uniqueFilename = `${Date.now()}-${uuidv4()}-${originalFilename}`;
-  const s3Key = `uploads/${uniqueFilename}`;
-
-  const contentType = getMimeType(originalFilename);
-
-  const command = new PutObjectCommand({
-    Bucket: process.env.AWS_BUCKET_NAME,
-    Key: s3Key,
-    Body: buffer,
-    ContentType: contentType,
-  });
-
   try {
+    // ✅ Sanitize filename
+    const safeFilename = originalFilename
+      .replace(/\s+/g, "-") // Replace spaces with dashes
+      .replace(/[^a-zA-Z0-9.\-_]/g, ""); // Remove unsafe chars
+
+    const uniqueFilename = `${Date.now()}-${uuidv4()}-${safeFilename}`;
+    const s3Key = `uploads/${uniqueFilename}`;
+
+    const contentType = getMimeType(originalFilename);
+
+    // ✅ Create S3 PutObject command
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: s3Key,
+      Body: buffer,
+      ContentType: contentType,
+      // ACL: "public-read", // ⚠️ Only if bucket policy allows public access
+    });
+
+    // ✅ Upload file to S3
     await s3Client.send(command);
 
-    const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
+    // ✅ Construct public URL
+    const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${encodeURIComponent(s3Key)}`;
+
     return { s3Key, publicUrl };
   } catch (err) {
-    console.error("❌ S3 Upload Failed:", err);
-    throw err;
+    console.error(`❌ S3 Upload Failed for ${originalFilename} -> ${err.message}`);
+    throw new Error("S3 upload failed");
   }
 }
 
+/**
+ * Detect MIME type based on file extension
+ */
 function getMimeType(filename) {
   const ext = filename.split(".").pop().toLowerCase();
-  const map = { pdf: "application/pdf", zip: "application/zip" };
+  const map = {
+    pdf: "application/pdf",
+    zip: "application/zip",
+    "x-zip-compressed": "application/x-zip-compressed",
+  };
   return map[ext] || "application/octet-stream";
 }
 

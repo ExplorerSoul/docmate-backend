@@ -2,8 +2,8 @@ const mongoose = require('mongoose');
 const validator = require('validator');
 
 /**
- * Schema to represent a file/document uploaded by admin or student.
- * Used with S3 storage + blockchain hash verification.
+ * File/Document schema for blockchain-integrated academic systems.
+ * Handles single and batch uploads (Merkle-based).
  */
 const fileSchema = new mongoose.Schema({
   title: {
@@ -18,24 +18,28 @@ const fileSchema = new mongoose.Schema({
     trim: true
   },
 
+  docType: {
+    type: String,
+    required: true, // E.g. degree, bonafide, etc.
+    trim: true
+  },
+
   hash: {
     type: String,
     required: true,
     trim: true,
-    unique: true, // If same document isn't reused across institutes
-    // Description: SHA-256 hash of the document used for blockchain verification
+    // keccak-256 hash of document (used in on-chain or Merkle validation)
   },
 
   url: {
     type: String,
-    required: true, // S3 public or signed URL
+    required: true, // Public S3 file URL
     trim: true
   },
 
-  // ✅ Add s3Key for presigned URL retrieval
   s3Key: {
     type: String,
-    required: true, // Internal S3 object key (uploads/...uuid.pdf)
+    required: true, // S3 internal file path
     trim: true
   },
 
@@ -77,7 +81,7 @@ const fileSchema = new mongoose.Schema({
 
   issuer: {
     type: String,
-    required: true, // Ethereum address of admin
+    required: true, // Could be institute name or Ethereum address
     trim: true
   },
 
@@ -95,21 +99,34 @@ const fileSchema = new mongoose.Schema({
 
   isApproved: {
     type: Boolean,
-    default: true // Default true for admin uploads
+    default: true
+  },
+
+  // ✅ Batch/Merkle-related fields
+  isBatch: {
+    type: Boolean,
+    default: false
+  },
+  batchMerkleRoot: {
+    type: String,
+    default: null // Merkle root (0x...) if part of batch
+  },
+  batchId: {
+    type: String,
+    default: null // Optional: blockchain batch ID
   }
 
 }, { timestamps: true });
 
 /**
- * ⚡ Indexes for faster queries
+ * ⚡ Indexes for high-performance queries
  */
 fileSchema.index({ regdNo: 1, institute: 1 });
 fileSchema.index({ studentEmail: 1, institute: 1 });
-fileSchema.index({ hash: 1, institute: 1 }, { unique: true });
+fileSchema.index({ hash: 1, institute: 1 }, { unique: true }); // hash must be unique within an institute
 
 /**
- * 💡 Returns a Mongoose model scoped to a specific institute.
- * Each institute has its own collection (e.g., files_iitg, files_nitk).
+ * 💡 Returns Mongoose model scoped per institute (multi-tenant support)
  */
 function getFileModel(institute) {
   if (!institute || typeof institute !== 'string') {
@@ -117,8 +134,8 @@ function getFileModel(institute) {
   }
 
   const safeName = institute.trim().toLowerCase().replace(/\s+/g, '_');
-  const modelName = `File_${safeName}`;          // Mongoose model name
-  const collectionName = `files_${safeName}`;    // MongoDB collection name
+  const modelName = `File_${safeName}`;
+  const collectionName = `files_${safeName}`;
 
   return mongoose.models[modelName] || mongoose.model(modelName, fileSchema, collectionName);
 }

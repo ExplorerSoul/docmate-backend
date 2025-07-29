@@ -1,9 +1,15 @@
 const express = require("express");
 const router = express.Router();
-const upload = require("../middleware/verifyMiddleware"); // memory storage for PDF
+
+const { upload, multerErrorHandler } = require("../middleware/verifyMiddleware");
 const { verifyCertificate } = require("../controller/verifyController");
 
-// POST /api/verify
-router.post("/", upload.single("file"), verifyCertificate);
+// ✅ POST /api/verify - Verify uploaded PDF document (hash/Merkle proof)
+router.post(
+  "/",
+  upload.single("file"),       // Upload PDF in-memory
+  multerErrorHandler,          // Catch multer errors (file size, format, etc.)
+  verifyCertificate            // Main logic to verify document
+);
 
 module.exports = router;
